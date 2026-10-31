@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Бультерьер — пиксельные спрайты</title>
+<link href="https://fonts.googleapis.com/css2?family=PT+Sans:wght@400;700&display=swap" rel="stylesheet"><style>
+body{margin:0;font-family:'PT Sans',Tahoma,sans-serif;background:#0f1320;color:#dcd8f4}
+header{padding:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:20px;margin:0 12px 0 0}
+button{border:2px solid #0d0b1c;background:#232a40;box-shadow:inset 2px 2px 0 #3a4466;border-radius:0;font-family:inherit;color:#dcd8f4;padding:7px 12px;font-weight:700;cursor:pointer;color:inherit}
+button.on{background:#35f2ff;color:#05202a;box-shadow:none}
+.dl{background:#232a40;color:#fff}
+table{border-collapse:collapse;margin:0 16px 24px}
+td,th{padding:2px 4px;text-align:center;font-size:12px}
+th{font-weight:700;color:#8f89b8}
+canvas.s{width:120px;height:129px;image-rendering:pixelated;background:#3c8a52;border:2px solid #0d0b1c}
+#stage{margin:0 16px 12px;display:flex;gap:16px;align-items:center}
+#big{width:320px;height:344px;image-rendering:pixelated;background:#3c8a52;border:2px solid #0d0b1c}
+.cols span{display:inline-block;width:24px;height:24px;cursor:pointer;border:3px solid #fff;box-shadow:0 0 0 2px #0d0b1c;margin-right:4px}
+</style></head><body>
+<header><h1>🐶 Бультерьер · пиксельная изометрия</h1><span id="coats"></span><span class="cols" id="cols"></span><button class="dl" id="dl">⬇ Спрайт-лист PNG</button></header>
+<div id="stage"><canvas id="big" width="80" height="86"></canvas><div><div id="acts"></div><p style="font-size:13px;color:#8f89b8;max-width:420px">Строки листа PNG: анимации по порядку (idle 8 кадров, walk 12, eat 8, drink 8, sit 6, sleep 6, happy 10, shake 10), в каждой 8 направлений. Колонки — кадры, каждый кадр 80×86. Направление 0 смотрит вниз-вправо, дальше по часовой стрелке через каждые 45°.</p></div></div>
+<table id="tb"></table>
+<script>
+/* DogSprite v2 — детальный изометрический бультерьер.
+   Пёс собран из 3D-поверхностей (эллипсоиды, «яйцо», капсулы), рендерится с
+   двойным сглаживанием, мягким светом, контуром и деталями морды.
+   Кадр 192×192, 8 направлений, анимации: idle, walk, eat, drink, sit, sleep, happy, shake. */
+function DogSpriteFactory() {
+  const W = 80, H = 86, OX = 40, OY = 59, K = 2.5;   // выходной кадр
+  const SS = 1;                                          // суперсэмплинг
+  const IW = W * SS, IH = H * SS, IK = K * SS;
+  const STEP = 0.55 / IK;                                // шаг по поверхности (в юнитах)
+  const DIRS = 8;
+  const ANIMS = {
+    idle:  {n: 8, fps: 6},
+    walk:  {n: 12, fps: 16},
+    eat:   {n: 8, fps: 9},
+    drink: {n: 8, fps: 12},
+    sit:   {n: 6, fps: 4},
+    sleep: {n: 6, fps: 3},
+    happy: {n: 10, fps: 14},
+    shake: {n: 10, fps: 16},
+  };
+  const camR = [0.7071, -0.7071, 0], camU = [-0.3536, -0.3536, 0.8660], camV = [0.6124, 0.6124, 0.5];
+  const L = norm([-0.5, 0.25, 1.0]);           // основной свет (сверху-слева)
+  const L2 = norm([0.8, 0.6, 0.2]);            // контровой
+  function norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+  function mm(a, b) { const r = new Array(9); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) r[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j]; return r; }
+  function mv(m, v) { return [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]]; }
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const rY = a => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+  const rX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+  const rZ = a => { const c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, s, c, 0, 0, 0, 1]; };
+  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  const smooth = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+
+  /* ---------- цвета ---------- */
+  function hex(h) { h = h.replace('#', ''); return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; }
+  function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+  function ramp(h, warm = [255, 247, 232]) { const c = hex(h); return {sh: mix(c, [34, 28, 72], 0.45), md: c, hi: mix(c, warm, 0.36)}; }
+  const COATS = {
+    white:   {base: '#eeeaf0', chest: '#f8f5f6', patch: null,      stripe: null,      ear: '#ee9fb4', blaze: false, muzzle: '#f2dde4'},
+    patch:   {base: '#eeeaf0', chest: '#f8f5f6', patch: '#2e2630', stripe: null,      ear: '#ee9fb4', blaze: false, muzzle: '#f2dde4'},
+    brindle: {base: '#8f6446', chest: '#eeeaf0', patch: null,      stripe: '#4a2f22', ear: '#c98a7c', blaze: true},
+    red:     {base: '#d0834a', chest: '#f5ede6', patch: null,      stripe: null,      ear: '#e59f8c', blaze: true},
+    black:   {base: '#2e2a36', chest: '#eeeaf0', patch: null,      stripe: null,      ear: '#7a6070', blaze: true},
+    lav:     {base: '#b39ce8', chest: '#f1ebff', patch: '#8a6fd0', stripe: null,      ear: '#f0aed0', blaze: false, muzzle: '#e4d8f8'},
+  };
+  function palette(coat, collar) {
+    const C = COATS[coat] || COATS.white;
+    return {
+      base: ramp(C.base), chest: ramp(C.chest), patch: ramp(C.patch || C.base), stripe: ramp(C.stripe || C.base),
+      earIn: ramp(C.ear), muzzle: ramp(C.muzzle || C.chest), cheek: ramp('#f0a0b4'),
+      nose: {sh: [24, 16, 20], md: [46, 34, 40], hi: [120, 104, 112]},
+      eye: {sh: [16, 10, 14], md: [28, 18, 24], hi: [70, 52, 60]}, shine: {sh: [255, 255, 255], md: [255, 255, 255], hi: [255, 255, 255]},
+      lid: ramp(C.patch && coat !== 'lav' ? '#2a2020' : '#3b2a2c'), mouth: {sh: [70, 40, 48], md: [96, 56, 64], hi: [120, 74, 82]},
+      collar: ramp(collar || '#f2b84b'), tag: ramp('#f2c14e', [255, 250, 220]), tongue: ramp('#ec6f8d'), pad: ramp('#4a3a48'),
+    };
+  }
+
+  /* ---------- поза ---------- */
+  function pose(anim, f, n) {
+    const t = f / n, TAU = Math.PI * 2, s = Math.sin(t * TAU), c = Math.cos(t * TAU);
+    const P = {bodyZ: 8.3, bodyPitch: 0, bodyRoll: 0, lift: 0, neckPitch: -0.9, neckDX: 0, neckDZ: 0, headPitch: 0.32, headYaw: 0, headRoll: 0, headDZ: 0, headDX: 0,
+      tailWag: 0, tailUp: 0.18, eyes: 'open', tongue: false, mode: 'stand', earBack: 0, sw: [0, 0, 0, 0], legLift: null, mouth: 0};
+    if (anim === 'idle') { P.bodyZ += s * 0.08; P.tailWag = s * 0.28; P.headYaw = Math.sin(t * TAU) * 0.08; if (t >= 0.44 && t < 0.56) P.eyes = 'closed'; P.earBack = Math.max(0, Math.sin(t * TAU)) * 0.12; }
+    if (anim === 'walk') {
+      const a = 0.42; P.sw = [s * a, -s * a, -s * a, s * a];
+      P.legLift = [Math.max(0, c), Math.max(0, -c), Math.max(0, -c), Math.max(0, c)];
+      P.bodyZ += Math.abs(s) * 0.3 - 0.1; P.tailWag = s * 0.3; P.headPitch = 0.36 + Math.cos(t * TAU * 2) * 0.03; P.bodyRoll = s * 0.025;
+    }
+    if (anim === 'eat' || anim === 'drink') {
+      const chew = (Math.sin(t * TAU * 2) + 1) / 2; P.neckPitch = 0.75; P.neckDX = 1.1; P.neckDZ = -2.6; P.headPitch = 1.15; P.headDX = 2.4; P.headDZ = -9.6 + (anim === 'eat' ? chew * 0.4 : chew * 0.12);
+      P.bodyPitch = 0.1; P.tailWag = s * 0.4; P.eyes = anim === 'eat' && chew > 0.6 ? 'closed' : 'open'; P.tongue = anim === 'drink' && Math.sin(t * TAU * 2) > 0; P.frontBend = 0.25;
+    }
+    if (anim === 'sit') { P.mode = 'sit'; P.tailWag = s * 0.2; if (t >= 0.5 && t < 0.67) P.eyes = 'closed'; P.headYaw = Math.sin(t * TAU) * 0.13; }
+    if (anim === 'sleep') { P.mode = 'lie'; P.eyes = 'closed'; P.breath = s * 0.12; P.earBack = 0.35; }
+    if (anim === 'happy') {
+      P.lift = Math.max(0, s) * 2.6; P.tailWag = Math.sin(t * TAU * 3) * 0.65; P.eyes = 'happy'; P.tongue = true; P.mouth = 1; P.headPitch = 0.1;
+      P.sw = [-0.75 * Math.max(0, s), -0.75 * Math.max(0, s), 0.35 * Math.max(0, s), 0.35 * Math.max(0, s)];
+    }
+    if (anim === 'shake') { const w = Math.sin(t * TAU * 2); P.bodyRoll = w * 0.28; P.headRoll = -w * 0.5; P.eyes = 'closed'; P.tailWag = -w * 0.6; P.earBack = 0.45; }
+    return P;
+  }
+
+  /* ---------- детали ---------- */
+  function buildParts(P) {
+    const parts = [];
+    const lie = P.mode === 'lie', sit = P.mode === 'sit';
+    let bc = [0, 0, P.bodyZ + P.lift], bR = mm(rY(P.bodyPitch), rX(P.bodyRoll));
+    if (sit) { bc = [-1.8, 0, 7.0]; bR = rY(-0.62); }
+    if (lie) { bc = [0, 0, 2.95 + (P.breath || 0)]; bR = I; }
+    const BF = {c: bc, R: bR};
+    const B = p => add(bc, mv(bR, p));
+    const body = (id, c, r, R = I, k = 'ell') => parts.push({k, F: BF, c, R, r, col: 'body', id});
+    // корпус: глубокая грудь, подтянутый живот, круп
+    body(1, [2.5, 0, -0.05], [3.95, 2.72, 3.35]);
+    body(1, [-0.6, 0, 0.5], [4.3, 2.4, 2.55]);
+    body(1, [-3.7, 0, 0.45], [3.35, 2.55, 2.75]);
+    for (const sg of [1, -1]) {
+      body(13, [3.0, sg * 1.85, -0.5], [1.95, 0.98, 2.6], rY(0.25));
+      body(14, [-4.0, sg * 1.85, -0.3], [2.35, 1.08, 2.75], rY(-0.2));
+    }
+    // голова — длинное «яйцо» с опущенным носом
+    let hc = B([7.6 + P.headDX, 0, 5.5 + P.headDZ]);
+    if (sit) hc = B([7.6, 0, 5.2]);
+    if (lie) hc = [8.6, 0, 3.0];
+    const hR = mm(mm(mm(bR, rZ(P.headYaw)), rX(P.headRoll)), rY(P.headPitch + (sit ? 0.55 : 0) + (lie ? 0.1 : 0)));
+    const HF = {c: hc, R: hR};
+    // шея — ровная сужающаяся «труба» от плеч к основанию черепа, без горбов
+    const nb = B([4.1 + P.neckDX * 0.3, 0, 1.2 + P.neckDZ * 0.3]);
+    const nt = add(hc, mv(hR, [-2.0, 0, -0.75]));
+    parts.push({k: 'cap', a: nb, b: nt, r0: 1.5, r1: 1.15, col: 'neck', id: 2});
+    // ошейник — кольцо поперёк шеи
+    const nd = norm(sub(nt, nb)), nlen = Math.hypot(...sub(nt, nb));
+    const tmp = Math.abs(nd[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const e1 = norm([nd[1] * tmp[2] - nd[2] * tmp[1], nd[2] * tmp[0] - nd[0] * tmp[2], nd[0] * tmp[1] - nd[1] * tmp[0]]);
+    const e2 = [nd[1] * e1[2] - nd[2] * e1[1], nd[2] * e1[0] - nd[0] * e1[2], nd[0] * e1[1] - nd[1] * e1[0]];
+    const rc = add(nb, nd.map(v => v * nlen * 0.55)), rr = 1.5 + (1.15 - 1.5) * 0.55 + 0.1;
+    const ring = [];
+    for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2; ring.push(add(rc, add(e1.map(v => v * Math.cos(a) * rr), e2.map(v => v * Math.sin(a) * rr)))); }
+    for (let i = 0; i < 16; i++) parts.push({k: 'cap', a: ring[i], b: ring[(i + 1) % 16], r0: 0.34, r1: 0.34, col: 'collar', id: 15});
+    const low = ring.reduce((m, p) => p[2] < m[2] ? p : m, ring[0]);
+    parts.push({k: 'ell', F: {c: add(low, [0.15, 0, -0.55]), R: I}, c: [0, 0, 0], R: I, r: [0.42, 0.6, 0.6], col: 'tag', id: 16});
+    parts.push({k: 'egg', F: HF, c: [0, 0, 0], R: I, r: [5.7, 2.45, 2.7], col: 'head', id: 3, eyes: P.eyes});
+    for (const sg of [1, -1]) parts.push({k: 'ell', F: HF, c: [-0.3, sg * 1.3, -0.6], R: I, r: [2.2, 1.15, 1.5], col: 'head', id: 3, eyes: P.eyes});
+    parts.push({k: 'ell', F: HF, c: [2.6, 0, -1.55 - P.mouth * 0.35], R: rY(0.1 + P.mouth * 0.2), r: [2.85, 1.15, 0.8], col: 'jaw', id: 3});
+    // уши — небольшие, торчком
+    for (const sg of [1, -1]) {
+      const eR = mm(rX(-sg * 0.22), rY(-0.15 - P.earBack));
+      parts.push({k: 'cone', F: HF, c: [-1.7 - P.earBack * 0.6, sg * 1.05, 2.45], R: eR, r: [1.05, 0.42, 1.95], col: 'ear', id: 4});
+    }
+    if (P.tongue) parts.push({k: 'ell', F: HF, c: [3.8, 0, -1.85 - P.mouth * 0.3], R: rY(0.35), r: [1.0, 0.65, 0.33], col: 'tongue', id: 5});
+    // лапы — длинные, с локтем и скакательным суставом
+    const hips = [[3.2, 1.6], [3.2, -1.6], [-4.1, 1.65], [-4.1, -1.65]];
+    hips.forEach(([hx, hy], i) => {
+      const front = i < 2;
+      const top = B([hx, hy, -1.4]);
+      let foot, mid;
+      if (lie) { foot = front ? [top[0] + 4.6, hy * 1.05, 0.55] : [top[0] + 2.9, hy * 1.45, 0.6]; mid = front ? [top[0] + 1.6, hy, 0.9] : [top[0] - 0.6, hy * 1.35, 1.0]; }
+      else if (sit && !front) { foot = [top[0] + 3.4, hy * 1.2, 0.55]; mid = [top[0] - 1.3, hy * 1.25, 1.1]; parts.push({k: 'ell', F: {c: add(top, [0.4, hy * 0.1, -0.4]), R: rY(-0.25)}, c: [0, 0, 0], R: I, r: [2.6, 1.1, 1.8], col: 'body', id: 14}); }
+      else {
+        const len = Math.max(1, top[2] - 0.55), a = P.sw[i] || 0;
+        const lift = (P.legLift ? P.legLift[i] : 0) * 1.0 + (P.lift && front ? P.lift * 0.3 : 0);
+        foot = [top[0] + Math.sin(a) * len, hy, Math.max(0.55, top[2] - Math.cos(a) * len + lift)];
+        if (sit && front) foot = [top[0] + 0.9, hy, 0.55];
+        const bend = front ? 0.15 + (P.frontBend || 0) + lift * 0.25 : -0.9 - lift * 0.2;
+        mid = [(top[0] + foot[0]) / 2 + bend, (top[1] + foot[1]) / 2, (top[2] + foot[2]) / 2 + (front ? 0 : 0.3)];
+      }
+      parts.push({k: 'cap', a: top, b: mid, r0: front ? 1.05 : 1.3, r1: front ? 0.78 : 0.85, col: 'leg', id: 7 + i});
+      parts.push({k: 'cap', a: mid, b: foot, r0: front ? 0.78 : 0.82, r1: 0.68, col: 'leg', id: 7 + i});
+      parts.push({k: 'ell', F: {c: add(foot, [0.5, 0, -0.05]), R: I}, c: [0, 0, 0], R: I, r: [1.1, 0.82, 0.52], col: 'paw', id: 7 + i});
+    });
+    // хвост — толстый у основания, держит почти горизонтально
+    const tb = B([-6.6, 0, 1.2]);
+    const tu = lie ? -0.05 : sit ? -0.2 : P.tailUp;
+    const tR = mm(bR, rZ(P.tailWag));
+    let t1 = add(tb, mv(tR, [-Math.cos(tu) * 2.2, 0, Math.sin(tu) * 2.2]));
+    let t2 = add(t1, mv(mm(tR, rZ(P.tailWag * 0.6)), [-Math.cos(tu - 0.15) * 1.8, 0, Math.sin(tu - 0.15) * 1.8]));
+    if (lie || sit) { t1 = [t1[0], t1[1] + 1.0, Math.max(0.55, t1[2])]; t2 = [t2[0] + 1.4, t2[1] + 2.6, Math.max(0.5, t2[2])]; }
+    parts.push({k: 'cap', a: tb, b: t1, r0: 0.85, r1: 0.55, col: 'body', id: 11});
+    parts.push({k: 'cap', a: t1, b: t2, r0: 0.55, r1: 0.2, col: 'body', id: 11});
+    return parts;
+  }
+
+  /* ---------- окраска точки ---------- */
+  function hash3(x, y, z) { const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return h - Math.floor(h); }
+  function colorOf(part, u, bp, wp, coat) {
+    const C = COATS[coat] || COATS.white;
+    const fur = () => {
+      if (!C.stripe) return ['base', 0];
+      const v = Math.sin(bp[0] * 2.3 + Math.sin(bp[2] * 0.8 + Math.abs(bp[1]) * 0.9) * 1.4);
+      return v > 0.45 ? ['stripe', smooth(0.45, 0.7, v)] : ['base', 0];
+    };
+    switch (part.col) {
+      case 'body': {
+        if (part.id === 1 || part.id === 13) {
+          if (bp[0] > 3.0 && bp[2] < 0.6 - (bp[0] - 3.0) * 0.2 && Math.abs(bp[1]) < 1.9) return ['chest', 0];
+          if (bp[2] < -2.0 && Math.abs(bp[1]) < 1.4 && bp[0] > -1) return ['chest', 0];
+        }
+        return fur();
+      }
+      case 'neck': return fur();
+      case 'jaw': return ['muzzle', 0];
+      case 'head': {
+        const [x, y, z] = u;
+        if (x > 4.9 && z > -1.0 && Math.abs(y) < 1.25) return ['nose', 0];
+        // глаза — косые миндалины высоко на голове
+        if (Math.abs(y) > 0.85) {
+          const dx = x - 0.7, dz = z - 0.95, ay = Math.abs(y);
+          if (part.eyes === 'open') {
+            const w = 1.0, edge = 0.5 * (1 - Math.abs(dx) / w);
+            if (Math.abs(dx) < w && Math.abs(dz - 0.28 * dx) < edge) {
+              if (dx > 0.08 && dx < 0.36 && dz - 0.28 * dx > 0.02 && dz - 0.28 * dx < 0.26) return ['shine', 0];
+              return ['eye', 0];
+            }
+            
+          } else if (part.eyes === 'closed') {
+            if (Math.abs(dx) < 0.85 && Math.abs(dz - (-0.12 + 0.12 * dx - 0.25 * (1 - dx * dx))) < 0.11) return ['lid', 0];
+          } else if (part.eyes === 'happy') {
+            if (Math.abs(dx) < 0.85 && Math.abs(dz - (0.18 * (1 - dx * dx * 1.4) - 0.05)) < 0.12) return ['lid', 0];
+          }
+        }
+        // рот — линия улыбки
+        if (Math.abs(y) > 0.5 && x > 1.4 && x < 5.1) { const mz = -1.02 - (x - 1.4) * 0.05 + (x < 2.0 ? (2.0 - x) * 0.5 : 0); if (Math.abs(z - mz) < 0.1) return ['mouth', 0]; }
+        if (C.patch && y > 0.25) { const ex = (x - 0.6) / 1.9, ez = (z - 0.9) / 1.35; if (ex * ex + ez * ez < 1) return ['patch', 0]; }
+        if (C.blaze && x > 0.9 && Math.abs(y) < 0.3 + Math.max(0, x) * 0.07 && z > 0.6 - Math.max(0, x - 1) * 0.55) return ['chest', 0];
+        if (x > 2.5 && z < -0.7) return [C.blaze ? 'chest' : 'muzzle', 0];
+        if (!C.blaze && x > 0.3 && x < 2.4 && Math.abs(y) > 1.25 && z < -0.15 && z > -0.95) return ['cheek', 0.35];
+        return fur();
+      }
+      case 'ear': return (u[0] > 0.12 && u[2] < 1.4 && u[2] > -1.6 && Math.abs(u[1]) < 0.42) ? ['earIn', 0] : ['base', 0];
+      case 'leg': return wp[2] < 2.6 && (C.blaze || coat === 'patch') ? ['chest', 0] : fur();
+      case 'paw': return u[2] < -0.42 && u[0] > -0.6 ? ['pad', 0] : [C.blaze ? 'chest' : 'base', 0];
+      default: return [part.col, 0];
+    }
+  }
+
+  /* ---------- рендер ---------- */
+  function renderPixels(coat, collar, anim, f, dir) {
+    const P = pose(anim, f, ANIMS[anim].n);
+    const parts = buildParts(P);
+    const RZ = rZ(dir * Math.PI / 4);
+    const N = IW * IH;
+    const depth = new Float32Array(N).fill(-1e9), pid = new Int16Array(N).fill(-1);
+    const R = new Uint8ClampedArray(N), G = new Uint8ClampedArray(N), Bc = new Uint8ClampedArray(N);
+    const pal = palette(coat, collar);
+    const RX = [RZ[0] * camR[0] + RZ[3] * camR[1], RZ[1] * camR[0] + RZ[4] * camR[1], 0];
+    const RU = [RZ[0] * camU[0] + RZ[3] * camU[1], RZ[1] * camU[0] + RZ[4] * camU[1], camU[2]];
+    const RV = [RZ[0] * camV[0] + RZ[3] * camV[1], RZ[1] * camV[0] + RZ[4] * camV[1], camV[2]];
+    const Lw = mvT(RZ, L), L2w = mvT(RZ, L2);
+    function mvT(m, v) { return [m[0] * v[0] + m[3] * v[1] + m[6] * v[2], m[1] * v[0] + m[4] * v[1] + m[7] * v[2], m[2] * v[0] + m[5] * v[1] + m[8] * v[2]]; } // свет в систему собаки
+    function plot(wx, wy, wz, nx, ny, nz, part, ux, uy, uz) {
+      const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nlen; ny /= nlen; nz /= nlen;
+      const facing = nx * RV[0] + ny * RV[1] + nz * RV[2];
+      if (facing < -0.2) return;
+      const sx = Math.floor(OX * SS + (wx * RX[0] + wy * RX[1]) * IK);
+      const sy = Math.floor(OY * SS - (wx * RU[0] + wy * RU[1] + wz * RU[2]) * IK);
+      if (sx < 0 || sy < 0 || sx >= IW || sy >= IH) return;
+      const d = wx * RV[0] + wy * RV[1] + wz * RV[2], i = sy * IW + sx;
+      if (d <= depth[i]) return;
+      depth[i] = d; pid[i] = part.id;
+      const wp = [wx, wy, wz], nl = [nx, ny, nz];
+      let u = [ux, uy, uz], bp = wp;
+      if (part.k !== 'cap') {
+        const lp = add(part.c, mv(part.R, u));
+        if (part.col === 'head' || part.col === 'ear' || part.col === 'jaw' || part.col === 'tongue') u = lp;
+        else if (part.col === 'body') bp = lp;
+      }
+      const [key, mixT] = colorOf(part, u, bp, wp, coat);
+      const ramp_ = pal[key] || pal.base;
+      const lt = nx * Lw[0] + ny * Lw[1] + nz * Lw[2];
+      let sh = smooth(-0.5, 0.9, lt);
+      const ao = 0.8 + 0.2 * clamp01((wz - 0.3) / 6) - (nz < -0.45 ? 0.15 : 0);
+      sh = clamp01(sh * ao + 0.05);
+      // четыре тона, как в пиксель-арте
+      const band = sh < 0.3 ? 0 : sh < 0.52 ? 1 : sh < 0.8 ? 2 : 3;
+      const tone = r => band === 0 ? r.sh : band === 1 ? mix(r.sh, r.md, 0.55) : band === 2 ? r.md : r.hi;
+      let col = tone(ramp_);
+      if (mixT > 0) col = mix(tone(pal.base), col, mixT > 0.5 ? 1 : 0.5);
+      if (key === 'nose') { const hv = norm([Lw[0] + RV[0], Lw[1] + RV[1], Lw[2] + RV[2]]); if (nx * hv[0] + ny * hv[1] + nz * hv[2] > 0.93) col = [150, 135, 145]; }
+      if ((key === 'tag' || key === 'collar') && band === 3) col = mix(col, [255, 255, 255], 0.25);
+      R[i] = col[0]; G[i] = col[1]; Bc[i] = col[2];
+    }
+    for (const part of parts) samplePart(part, plot);
+
+    // контуры
+    const out = new Uint8ClampedArray(N * 4);
+    const OUT = [13, 11, 28];
+    const mask = new Uint8Array(N); for (let i = 0; i < N; i++) if (pid[i] >= 0) mask[i] = 1;
+    for (let y = 0; y < IH; y++) for (let x = 0; x < IW; x++) {
+      const i = y * IW + x, o = i * 4;
+      if (mask[i]) {
+        let r = R[i], g = G[i], b = Bc[i];
+        // внутренняя линия: сосед ближе и это другая деталь
+        for (let q = 0; q < 4; q++) {
+          const xx = x + (q === 0 ? 1 : q === 1 ? -1 : 0), yy = y + (q === 2 ? 1 : q === 3 ? -1 : 0);
+          if (xx < 0 || yy < 0 || xx >= IW || yy >= IH) continue;
+          const j = yy * IW + xx;
+          if (mask[j] && pid[j] !== pid[i] && depth[j] - depth[i] > 1.0) { r = r * 0.62 + OUT[0] * 0.38; g = g * 0.62 + OUT[1] * 0.38; b = b * 0.62 + OUT[2] * 0.38; break; }
+        }
+        out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255;
+      } else {
+        // цветной контур: темнее соседнего цвета
+        let n = -1;
+        for (let q = 0; q < 4 && n < 0; q++) {
+          const xx = x + (q === 0 ? 1 : q === 1 ? -1 : 0), yy = y + (q === 2 ? 1 : q === 3 ? -1 : 0);
+          if (xx < 0 || yy < 0 || xx >= IW || yy >= IH) continue;
+          if (mask[yy * IW + xx]) n = yy * IW + xx;
+        }
+        if (n >= 0) { out[o] = R[n] * 0.28 + OUT[0] * 0.72; out[o + 1] = G[n] * 0.28 + OUT[1] * 0.72; out[o + 2] = Bc[n] * 0.28 + OUT[2] * 0.72; out[o + 3] = 255; }
+      }
+    }
+    return out;
+  }
+  function toCanvas(px) {
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    cv.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0);
+    return cv;
+  }
+  function render(coat, collar, anim, f, dir) { return toCanvas(renderPixels(coat, collar, anim, f, dir)); }
+
+  // выборка точек по поверхности детали
+  function samplePart(part, plot) {
+    const st = STEP;
+    if (part.k === 'cap') {
+      const A = part.a, Bp = part.b, ab = sub(Bp, A), len = Math.hypot(ab[0], ab[1], ab[2]) || 1e-4, ax = ab.map(v => v / len);
+      const t1 = Math.abs(ax[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const e1 = norm([ax[1] * t1[2] - ax[2] * t1[1], ax[2] * t1[0] - ax[0] * t1[2], ax[0] * t1[1] - ax[1] * t1[0]]);
+      const e2 = [ax[1] * e1[2] - ax[2] * e1[1], ax[2] * e1[0] - ax[0] * e1[2], ax[0] * e1[1] - ax[1] * e1[0]];
+      const nL = Math.max(2, Math.ceil(len / st));
+      for (let li = 0; li <= nL; li++) {
+        const t = li / nL, r = part.r0 + (part.r1 - part.r0) * t;
+        const cx = A[0] + ab[0] * t, cy = A[1] + ab[1] * t, cz = A[2] + ab[2] * t;
+        const nA = Math.max(8, Math.ceil(2 * Math.PI * r / st));
+        for (let k = 0; k < nA; k++) {
+          const a = k / nA * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+          const nx = e1[0] * ca + e2[0] * sa, ny = e1[1] * ca + e2[1] * sa, nz = e1[2] * ca + e2[2] * sa;
+          plot(cx + nx * r, cy + ny * r, cz + nz * r, nx, ny, nz, part, 0, 0, 0);
+        }
+      }
+      sphere(A, part.r0, part, plot); sphere(Bp, part.r1, part, plot);
+      return;
+    }
+    const [a, b, c] = part.r;
+    const F = part.F, M = mm(F.R, part.R), O = add(F.c, mv(F.R, part.c));
+    const maxR = Math.max(a, b, c);
+    const nLat = Math.max(6, Math.ceil(Math.PI * maxR / st));
+    const cone = part.k === 'cone', egg = part.k === 'egg';
+    for (let li = 0; li <= nLat; li++) {
+      const lat = -Math.PI / 2 + Math.PI * li / nLat, sl = Math.sin(lat), cl = Math.cos(lat);
+      let rb, rc, sb = 1, sc = 1, fixed, tt = 0;
+      if (cone) { fixed = c * sl; tt = (sl + 1) / 2; sb = sc = 1.05 - 0.8 * tt * tt; rb = a * cl * sb; rc = b * cl * sc; }
+      else { const ae = egg && sl < 0 ? a * 0.68 : a; fixed = ae * sl; if (egg) { tt = (sl + 1) / 2; sb = 1.0 - 0.3 * tt * tt; sc = 1.0 - 0.12 * tt; } rb = b * sb * cl; rc = c * sc * cl; }
+      const nA = Math.max(6, Math.ceil(2 * Math.PI * Math.max(rb, rc) / st));
+      for (let k = 0; k < nA; k++) {
+        const ph = k / nA * Math.PI * 2, cp = Math.cos(ph), sp = Math.sin(ph);
+        let ux, uy, uz, nx, ny, nz;
+        if (cone) { ux = rb * cp; uy = rc * sp; uz = fixed; nx = ux / (a * a * sb * sb + 1e-6); ny = uy / (b * b * sc * sc + 1e-6); nz = fixed / (c * c) + 0.25 * tt; }
+        else { const ae = egg && sl < 0 ? a * 0.68 : a; ux = fixed; uy = rb * cp; uz = rc * sp; nx = ux / (ae * ae); ny = uy / (b * b * sb * sb); nz = uz / (c * c * sc * sc); }
+        const wx = O[0] + M[0] * ux + M[1] * uy + M[2] * uz, wy = O[1] + M[3] * ux + M[4] * uy + M[5] * uz, wz = O[2] + M[6] * ux + M[7] * uy + M[8] * uz;
+        plot(wx, wy, wz, M[0] * nx + M[1] * ny + M[2] * nz, M[3] * nx + M[4] * ny + M[5] * nz, M[6] * nx + M[7] * ny + M[8] * nz, part, ux, uy, uz);
+      }
+    }
+  }
+  function sphere(C, r, part, plot) {
+    const nLat = Math.max(4, Math.ceil(Math.PI * r / STEP));
+    for (let li = 0; li <= nLat; li++) {
+      const lat = -Math.PI / 2 + Math.PI * li / nLat, cl = Math.cos(lat), sl = Math.sin(lat);
+      const nA = Math.max(6, Math.ceil(2 * Math.PI * r * cl / STEP));
+      for (let k = 0; k < nA; k++) { const ph = k / nA * Math.PI * 2, nx = cl * Math.cos(ph), ny = cl * Math.sin(ph); plot(C[0] + nx * r, C[1] + ny * r, C[2] + sl * r, nx, ny, sl, part, 0, 0, 0); }
+    }
+  }
+
+  /* ---------- кэш и фоновые потоки ---------- */
+  // в воркере: только считаем пиксели
+  if (typeof document === 'undefined') {
+    self.onmessage = e => { const [id, coat, collar, anim, f, dir] = e.data; const px = renderPixels(coat, collar, anim, f, dir); self.postMessage([id, px], [px.buffer]); };
+    return null;
+  }
+  const cache = {};
+  function getArr(coat, collar, anim, dir) {
+    const key = coat + '|' + collar;
+    const S = cache[key] || (cache[key] = {});
+    const A = S[anim] || (S[anim] = []);
+    return A[dir] || (A[dir] = []);
+  }
+  function frameIdx(anim, t) { const A = ANIMS[anim]; return Math.floor(t * A.fps) % A.n; }
+  // воркеры
+  const workers = []; const jobs = []; const pending = new Map(); let jid = 0;
+  try {
+    const src = DogSpriteFactory.toString() + '\nDogSpriteFactory();';
+    const url = URL.createObjectURL(new Blob([src], {type: 'text/javascript'}));
+    const nW = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+    for (let i = 0; i < nW; i++) {
+      const w = new Worker(url); w.busy = false;
+      w.onmessage = e => { const [id, px] = e.data; const j = pending.get(id); pending.delete(id); w.busy = false;
+        if (j) { const arr = getArr(j[0], j[1], j[2], j[4]); if (!arr[j[3]]) arr[j[3]] = toCanvas(px); } pumpW(); };
+      w.onerror = () => { w.dead = true; w.busy = false; };
+      workers.push(w);
+    }
+  } catch (e) { /* без воркеров — рисуем в основном потоке */ }
+  const queued = new Set();
+  function enqueue(coat, collar, anim, dir, urgent) {
+    for (let f = 0; f < ANIMS[anim].n; f++) {
+      const key = [coat, collar, anim, dir, f].join('|');
+      if (queued.has(key) || getArr(coat, collar, anim, dir)[f]) continue;
+      queued.add(key);
+      const job = [coat, collar, anim, f, dir];
+      urgent ? jobs.unshift(job) : jobs.push(job);
+    }
+    pumpW();
+  }
+  let mainBusy = false;
+  function pumpW() {
+    const live = workers.filter(w => !w.dead);
+    if (!live.length) { // запасной путь: основной поток, по кадру за такт
+      if (mainBusy || !jobs.length) return; mainBusy = true;
+      setTimeout(() => { const j = jobs.shift(); if (j) { const arr = getArr(j[0], j[1], j[2], j[4]); if (!arr[j[3]]) arr[j[3]] = render(j[0], j[1], j[2], j[3], j[4]); } mainBusy = false; pumpW(); }, 30);
+      return;
+    }
+    for (const w of live) {
+      if (w.busy || !jobs.length) continue;
+      const j = jobs.shift(); if (getArr(j[0], j[1], j[2], j[4])[j[3]]) { continue; }
+      const id = ++jid; pending.set(id, j); w.busy = true; w.postMessage([id, ...j]);
+    }
+  }
+  // готовый кадр; lazy — не блокировать: вернуть ближайший готовый и дорисовать в фоне
+  function frame(coat, collar, anim, dir, t, lazy) {
+    const arr = getArr(coat, collar, anim, dir), f = frameIdx(anim, t);
+    if (arr[f]) return arr[f];
+    if (lazy) {
+      enqueue(coat, collar, anim, dir, true);
+      for (let k = 1; k < ANIMS[anim].n; k++) { const g = arr[(f - k + ANIMS[anim].n) % ANIMS[anim].n]; if (g) return g; }
+      for (const alt of ['idle', 'walk', 'sit']) { const a2 = getArr(coat, collar, alt, dir); const g = a2.find(Boolean); if (g) return g; }
+    }
+    return (arr[f] = render(coat, collar, anim, f, dir));
+  }
+  function prewarm(coat, collar, anims, exclusive) {
+    anims = anims || Object.keys(ANIMS);
+    if (exclusive) { for (let i = jobs.length - 1; i >= 0; i--) if (jobs[i][0] !== coat || jobs[i][1] !== collar) { queued.delete([jobs[i][0], jobs[i][1], jobs[i][2], jobs[i][4], jobs[i][3]].join('|')); jobs.splice(i, 1); } }
+    for (const a of anims) for (let d = 0; d < DIRS; d++) enqueue(coat, collar, a, d, false);
+  }
+  function dirFor(dx, dy) {
+    let best = 0, bd = -2; const l = Math.hypot(dx, dy) || 1;
+    for (let d = 0; d < DIRS; d++) {
+      const a = d * Math.PI / 4, X = Math.cos(a), Y = Math.sin(a);
+      const sx = X * camR[0] + Y * camR[1], sy = -(X * camU[0] + Y * camU[1]);
+      const dot = (sx * dx + sy * dy) / (Math.hypot(sx, sy) * l);
+      if (dot > bd) { bd = dot; best = d; }
+    }
+    return best;
+  }
+  function sheetCanvas(coat, collar) {
+    const rows = []; for (const a in ANIMS) for (let d = 0; d < DIRS; d++) rows.push([a, d]);
+    const maxN = Math.max(...Object.values(ANIMS).map(a => a.n));
+    const cv = document.createElement('canvas'); cv.width = W * maxN; cv.height = H * rows.length;
+    const ctx = cv.getContext('2d');
+    rows.forEach(([a, d], r) => { for (let f = 0; f < ANIMS[a].n; f++) ctx.drawImage(frame(coat, collar, a, d, (f + 0.01) / ANIMS[a].fps), f * W, r * H); });
+    return cv;
+  }
+  function bbox(coat, collar, anim, dir, t) {
+    const fr = frame(coat, collar, anim, dir, t || 0);
+    if (fr._bb) return fr._bb;
+    const D = fr.getContext('2d').getImageData(0, 0, W, H).data; let x0 = W, x1 = 0, y0 = H, y1 = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (D[(y * W + x) * 4 + 3] > 200) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    // самая нижняя точка в правой/левой трети — морда при еде
+    let ry = y0, ly = y0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (D[(y * W + x) * 4 + 3] > 200) { if (x >= x1 - 4 && y > ry) ry = y; if (x <= x0 + 4 && y > ly) ly = y; }
+    return (fr._bb = {x0, x1, y0, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rightY: ry, leftY: ly});
+  }
+  function stats() { let n = 0; for (const k in cache) for (const a in cache[k]) for (const d of cache[k][a]) if (d) n += d.filter(Boolean).length; return {frames: n, queue: jobs.length, workers: workers.filter(w => !w.dead).length}; }
+  return {W, H, OX, OY, ANIMS, DIRS, COATS, frame, dirFor, sheetCanvas, render, prewarm, stats, bbox};
+}
+const DogSprite = DogSpriteFactory();
+</script>
+<script>
+const NAMES={idle:'стоит',walk:'идёт',eat:'ест',drink:'пьёт',sit:'сидит',sleep:'спит',happy:'радуется',shake:'отряхивается'};
+const CN={white:'Белый',patch:'С пятном',brindle:'Тигровый',red:'Рыжий',black:'Чёрный',lav:'Лавандовый'};
+let coat='white', collar='#f2b84b', big='walk', bigDir=0;
+const coatsEl=document.getElementById('coats'), colsEl=document.getElementById('cols'), tb=document.getElementById('tb'), acts=document.getElementById('acts');
+function ui(){ DogSprite.prewarm(coat,collar,null,true);
+  coatsEl.innerHTML=Object.keys(CN).map(k=>`<button class="${k===coat?'on':''}" data-c="${k}">${CN[k]}</button>`).join(' ');
+  colsEl.innerHTML=['#f2b84b','#6fd3e0','#e5534b','#9be564','#ff7eb6','#a68cff','#f1eefe'].map(c=>`<span data-col="${c}" style="background:${c};${c===collar?'outline:2px solid #f2b84b;outline-offset:2px':''}"></span>`).join('');
+  acts.innerHTML=Object.keys(NAMES).map(a=>`<button class="${a===big?'on':''}" data-a="${a}">${NAMES[a]}</button>`).join(' ')+'<br><br>'+[...Array(8)].map((_,d)=>`<button class="${d===bigDir?'on':''}" data-d="${d}">${['↘','↓','↙','←','↖','↑','↗','→'][d]}</button>`).join(' ');
+  tb.innerHTML='<tr><th></th>'+[...Array(8)].map((_,d)=>`<th>${['↘','↓','↙','←','↖','↑','↗','→'][d]}</th>`).join('')+'</tr>'+Object.keys(NAMES).map(a=>`<tr><th>${NAMES[a]}</th>${[...Array(8)].map((_,d)=>`<td><canvas class="s" width="80" height="86" data-a="${a}" data-d="${d}"></canvas></td>`).join('')}</tr>`).join('');
+}
+document.body.addEventListener('click',e=>{const t=e.target;
+  if(t.dataset.c){coat=t.dataset.c;ui();} if(t.dataset.col){collar=t.dataset.col;ui();}
+  if(t.dataset.a&&t.tagName==='BUTTON'){big=t.dataset.a;ui();} if(t.dataset.d&&t.tagName==='BUTTON'){bigDir=+t.dataset.d;ui();}
+  if(t.dataset.a&&t.tagName==='CANVAS'){big=t.dataset.a;bigDir=+t.dataset.d;ui();}
+});
+document.getElementById('dl').onclick=()=>{const cv=DogSprite.sheetCanvas(coat,collar);const a=document.createElement('a');a.download=`bullterrier_${coat}.png`;a.href=cv.toDataURL('image/png');a.click();};
+function tick(t){
+  document.querySelectorAll('canvas.s').forEach(c=>{const x=c.getContext('2d');x.clearRect(0,0,80,86);x.drawImage(DogSprite.frame(coat,collar,c.dataset.a,+c.dataset.d,t/1000,true),0,0);});
+  const b=document.getElementById('big').getContext('2d'); b.clearRect(0,0,80,86); b.drawImage(DogSprite.frame(coat,collar,big,bigDir,t/1000,true),0,0);
+  requestAnimationFrame(tick);
+}
+ui(); requestAnimationFrame(tick);
+</script></body></html>
